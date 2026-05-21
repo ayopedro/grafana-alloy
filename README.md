@@ -24,23 +24,31 @@ It forwards:
 ## Prerequisites
 
 - Docker installed locally
-- A `.env` file containing the Grafana Cloud endpoints and shared password
+- A `.env` file created from `.env.sample`
 
-Example `.env`:
+Create the local env file:
+
+```bash
+cp .env.sample .env
+```
+
+Then update `.env` with your Grafana Cloud values. The sample file contains:
 
 ```env
-OTLP_METRICS_URL=https://your-prometheus-endpoint/api/prom/push
-OTLP_LOGS_URL=https://your-loki-endpoint/loki/api/v1/push
-OTLP_TRACES_URL=your-tempo-endpoint:443
-GRAFANA_PASSWORD=your-grafana-cloud-api-token
+OTLP_METRICS_URL=https://prometheus-prod-xx.grafana.net/api/prom/push
+OTLP_LOGS_URL=https://logs-prod-xxx.grafana.net/loki/api/v1/push
+OTLP_TRACES_URL=tempo-prod-xx.grafana.net:443
+GRAFANA_PASSWORD=your-grafana-cloud-token
 ```
 
 Variable usage:
 
-- `OTLP_METRICS_URL`: Prometheus remote write endpoint for metrics
-- `OTLP_LOGS_URL`: Loki push endpoint for logs
-- `OTLP_TRACES_URL`: Tempo OTLP endpoint for traces
-- `GRAFANA_PASSWORD`: shared Grafana Cloud credential used by all exporters
+- `OTLP_METRICS_URL`: full HTTPS Prometheus remote write endpoint for metrics
+- `OTLP_LOGS_URL`: full HTTPS Loki push endpoint for logs
+- `OTLP_TRACES_URL`: Tempo OTLP gRPC endpoint in `host:port` format
+- `GRAFANA_PASSWORD`: Grafana Cloud token used by all exporters
+
+The trace endpoint intentionally does not include `https://` because the OTLP exporter in `config.alloy` expects a gRPC `host:port` endpoint.
 
 ## Run with Docker
 
