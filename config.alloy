@@ -1,0 +1,85 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+prometheus.exporter.statsd "statsd" {
+  listen_tcp          = ":9125"
+  listen_udp          = ":9126"
+}
+
+prometheus.scrape "statsd" {
+  targets         = prometheus.exporter.statsd.statsd.targets
+  forward_to      = [prometheus.remote_write.grafana_cloud_metrics.receiver]
+  scrape_interval = "10s"
+}
+
+prometheus.remote_write "grafana_cloud_metrics" {
+  endpoint {
+    url = sys.env("OTLP_METRICS_URL")
+
+    basic_auth {
+      username = "1555946"
+      password = sys.env("GRAFANA_PASSWORD")
+    }
+
+    queue_config {
+      sample_age_limit = "60s"
+    }
+  }
+}
+
+otelcol.receiver.otlp "ae_grafana_alloy" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.ae_grafana_alloy.input]
+    logs    = [otelcol.processor.batch.ae_grafana_alloy.input]
+    traces  = [otelcol.processor.batch.ae_grafana_alloy.input]
+  }
+}
+
+otelcol.processor.batch "ae_grafana_alloy" {
+  output {
+    metrics = [otelcol.exporter.prometheus.grafana_cloud_metrics.input]
+    logs    = [otelcol.exporter.loki.grafana_cloud_logs.input]
+    traces  = [otelcol.exporter.otlp.grafana_cloud_traces.input]
+  }
+}
+
+otelcol.exporter.otlp "grafana_cloud_traces" {
+  client {
+    endpoint = sys.env("OTLP_TRACES_URL")
+    auth     = otelcol.auth.basic.grafana_cloud_traces.handler
+  }
+}
+
+otelcol.auth.basic "grafana_cloud_traces" {
+  username = "872525"
+  password = sys.env("GRAFANA_PASSWORD")
+}
+
+otelcol.exporter.prometheus "grafana_cloud_metrics" {
+  forward_to = [prometheus.remote_write.grafana_cloud_metrics.receiver]
+}
+
+otelcol.exporter.loki "grafana_cloud_logs" {
+  forward_to = [loki.write.grafana_cloud_logs.receiver]
+}
+
+loki.write "grafana_cloud_logs" {
+  endpoint {
+    url = sys.env("OTLP_LOGS_URL")
+
+    basic_auth {
+      username = "878209"
+      password = sys.env("GRAFANA_PASSWORD")
+    }
+  }
+}
