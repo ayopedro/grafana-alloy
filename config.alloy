@@ -3,9 +3,11 @@ logging {
   format = "logfmt"
 }
 
+// Legacy StatsD ingestion is private-only. Do not expose these ports publicly.
 prometheus.exporter.statsd "statsd" {
   listen_tcp          = ":9125"
   listen_udp          = ":9126"
+  mapping_config_path = "/etc/alloy/mapping-statsd.yaml"
 }
 
 prometheus.scrape "statsd" {
@@ -17,69 +19,77 @@ prometheus.scrape "statsd" {
 prometheus.remote_write "grafana_cloud_metrics" {
   endpoint {
     url = sys.env("OTLP_METRICS_URL")
-
     basic_auth {
-      username = "1555946"
+      username = sys.env("GRAFANA_METRICS_USERNAME")
       password = sys.env("GRAFANA_PASSWORD")
-    }
-
-    queue_config {
-      sample_age_limit = "60s"
     }
   }
 }
 
-otelcol.receiver.otlp "ae_grafana_alloy" {
+// One htpasswd entry per app; ingestion passwords are separate from Cloud tokens.
+otelcol.auth.basic "ingestion" {
+  htpasswd {
+    inline = sys.env("ALLOY_INGESTION_HTPASSWD")
+  }
+}
+
+otelcol.receiver.otlp "gateway" {
   grpc {
-    endpoint = "0.0.0.0:4317"
+    endpoint = "[::]:4317"
+    auth     = otelcol.auth.basic.ingestion.handler
   }
-
   http {
-    endpoint = "0.0.0.0:4318"
+    endpoint = "[::]:4318"
+    auth     = otelcol.auth.basic.ingestion.handler
   }
-
   output {
-    metrics = [otelcol.processor.batch.ae_grafana_alloy.input]
-    logs    = [otelcol.processor.batch.ae_grafana_alloy.input]
-    traces  = [otelcol.processor.batch.ae_grafana_alloy.input]
+    metrics = [otelcol.processor.memory_limiter.gateway.input]
+    logs    = [otelcol.processor.memory_limiter.gateway.input]
+    traces  = [otelcol.processor.memory_limiter.gateway.input]
   }
 }
 
-otelcol.processor.batch "ae_grafana_alloy" {
+otelcol.processor.memory_limiter "gateway" {
+  check_interval = "1s"
+  limit          = "256MiB"
+  spike_limit    = "64MiB"
   output {
-    metrics = [otelcol.exporter.prometheus.grafana_cloud_metrics.input]
-    logs    = [otelcol.exporter.loki.grafana_cloud_logs.input]
-    traces  = [otelcol.exporter.otlp.grafana_cloud_traces.input]
+    metrics = [otelcol.exporter.otlphttp.grafana_cloud.input]
+    logs    = [otelcol.exporter.otlphttp.grafana_cloud.input]
+    traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
   }
 }
 
-otelcol.exporter.otlp "grafana_cloud_traces" {
+// Mount persistent storage at /var/lib/alloy/data.
+otelcol.storage.file "queue" {
+  directory = "/var/lib/alloy/data/otlp-queue"
+  fsync     = true
+}
+
+otelcol.exporter.otlphttp "grafana_cloud" {
   client {
-    endpoint = sys.env("OTLP_TRACES_URL")
-    auth     = otelcol.auth.basic.grafana_cloud_traces.handler
+    endpoint = sys.env("GRAFANA_OTLP_ENDPOINT")
+    // Explicit header avoids the v1.20.0 client_auth-only startup failure.
+    headers = {
+      "Authorization" = "Basic " + encoding.to_base64(sys.env("GRAFANA_OTLP_USERNAME") + ":" + sys.env("GRAFANA_PASSWORD")),
+    }
   }
-}
-
-otelcol.auth.basic "grafana_cloud_traces" {
-  username = "872525"
-  password = sys.env("GRAFANA_PASSWORD")
-}
-
-otelcol.exporter.prometheus "grafana_cloud_metrics" {
-  forward_to = [prometheus.remote_write.grafana_cloud_metrics.receiver]
-}
-
-otelcol.exporter.loki "grafana_cloud_logs" {
-  forward_to = [loki.write.grafana_cloud_logs.receiver]
-}
-
-loki.write "grafana_cloud_logs" {
-  endpoint {
-    url = sys.env("OTLP_LOGS_URL")
-
-    basic_auth {
-      username = "878209"
-      password = sys.env("GRAFANA_PASSWORD")
+  retry_on_failure {
+    enabled          = true
+    initial_interval = "5s"
+    max_interval     = "30s"
+    max_elapsed_time = "0s"
+  }
+  sending_queue {
+    enabled       = true
+    num_consumers = 4
+    queue_size    = 1000
+    storage       = otelcol.storage.file.queue.handler
+    // Persist before batching, rather than retaining batches in a processor.
+    batch {
+      flush_timeout = "1s"
+      min_size      = 512
+      max_size      = 1024
     }
   }
 }

@@ -1,5 +1,6 @@
+.git
 .env
 .env.*
 !.env.sample
-.htpasswd
 *.log
+.htpasswd

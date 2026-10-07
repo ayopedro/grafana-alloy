@@ -1,4 +1,6 @@
-FROM grafana/alloy:v1.14.1
+FROM grafana/alloy:v1.20.0
 COPY config.alloy /etc/alloy/config.alloy
 COPY mapping-statsd.yaml /etc/alloy/mapping-statsd.yaml
-ENTRYPOINT ["/bin/alloy", "run", "--storage.path=/var/lib/alloy/data"]
+COPY start.sh /etc/alloy/start.sh
+EXPOSE 4318
+ENTRYPOINT ["/bin/sh", "/etc/alloy/start.sh"]

@@ -1,114 +1,173 @@
-# Alloy Observability Gateway
+# Shared Alloy Observability Gateway
 
-This repository contains a Grafana Alloy configuration for receiving telemetry locally and forwarding it to Grafana Cloud.
+A shared, authenticated OTLP gateway for applications on any hosting platform. Each app pushes telemetry
+with its own ingestion credentials; Alloy forwards traces, logs and metrics to
+Grafana Cloud using a separate Cloud token. Existing private StatsD ingestion is
+preserved with Prometheus remote write.
 
-The current setup accepts:
-
-- StatsD metrics over TCP on `9125`
-- StatsD metrics over UDP on `9126`
-- OTLP gRPC on `4317`
-- OTLP HTTP on `4318`
-
-It forwards:
-
-- Metrics to Grafana Cloud Prometheus
-- Logs to Grafana Cloud Loki
-- Traces to Grafana Cloud Tempo
-
-## Files
-
-- `config.alloy`: main Alloy pipeline configuration
-- `Dockerfile`: image definition based on `grafana/alloy:v1.14.1`
-- `mapping-statsd.yaml`: StatsD mapping file included in the image
-
-## Prerequisites
-
-- Docker installed locally
-- A `.env` file created from `.env.sample`
-
-Create the local env file:
-
-```bash
-cp .env.sample .env
+```text
+Apps → HTTPS + app credentials → Alloy :4318 → Grafana Cloud OTLP
+StatsD clients → private :9125/:9126 → Alloy → Grafana Cloud Prometheus
 ```
 
-Then update `.env` with your Grafana Cloud values. The sample file contains:
+## Configuration
+
+Copy `.env.sample` to `.env` for local use. On your hosting platform, set these
+container environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `GRAFANA_OTLP_ENDPOINT` | Exact HTTPS base URL from the Grafana Cloud OpenTelemetry tile, normally ending in `/otlp` |
+| `GRAFANA_OTLP_USERNAME` | OTLP instance ID from that tile |
+| `GRAFANA_PASSWORD` | Cloud token with metrics, logs and traces write permissions |
+| `ALLOY_INGESTION_HTPASSWD` | One bcrypt htpasswd entry per app, separated by actual newlines |
+| `OTLP_METRICS_URL` | Existing Prometheus remote-write URL for StatsD, ending in `/api/prom/push` |
+| `GRAFANA_METRICS_USERNAME` | Prometheus instance ID for the StatsD remote-write endpoint |
+| `PORT` | Optional hosting-platform setting: `4318`, matching the fixed OTLP HTTP receiver port; Alloy does not read this variable |
+
+`OTLP_LOGS_URL` and `OTLP_TRACES_URL` are no longer used. The unified exporter
+appends each signal's `/v1/*` path to `GRAFANA_OTLP_ENDPOINT` automatically.
+Grafana's OTLP and Prometheus instance IDs can differ; use each tile's values.
+The startup script refuses to start when required variables are missing.
+
+Generate an app entry interactively, avoiding a password in shell history:
+
+```bash
+htpasswd -nB the-bridge-26
+```
+
+If `htpasswd` is unavailable locally, use the Apache image:
+
+```bash
+docker run --rm -it --entrypoint htpasswd httpd:2.4-alpine -nB the-bridge-26
+```
+
+Paste the complete `username:$2y$...` output into `ALLOY_INGESTION_HTPASSWD`.
+Repeat with a different username and password for every app. In your hosting
+platform's secret settings, use actual multiline variable content. In local `.env`, use a single-quoted multiline
+value so bcrypt dollar signs stay literal. Restart Alloy after changing entries.
+These credentials permit ingestion into the same Grafana stack; they do not
+provide tenant isolation or enforce an app's claimed `service.name`.
+
+### Multiple apps
+
+Generate one entry for each app, using a separate password:
+
+```bash
+htpasswd -nB the-bridge-26
+htpasswd -nB another-app
+```
+
+Store both complete output lines in the gateway's `ALLOY_INGESTION_HTPASSWD`:
+
+```text
+the-bridge-26:$2y$...hash-for-the-first-app...
+another-app:$2y$...hash-for-the-second-app...
+```
+
+Each app uses the same gateway endpoint but its own username and original password
+in its authorization header. Authentication happens on every export without a
+login flow. Removing an entry and restarting Alloy revokes those credentials;
+other entries continue to work. Keep Grafana Cloud credentials only on the gateway.
+
+## Deploy the gateway
+
+1. Build the root Dockerfile and run its image on your container hosting platform.
+   Use the image's default entrypoint so credential checks and Alloy startup run.
+2. Set the environment variables above through the platform's secret settings.
+3. Mount persistent storage at `/var/lib/alloy/data`.
+4. Route a public HTTPS endpoint through your platform's ingress or a reverse
+   proxy to the OTLP HTTP receiver on **port `4318`**. Terminate TLS at that ingress.
+5. Start with one replica using that storage. Keep the gateway running continuously.
+   Each additional replica needs independent storage; do not share queue files.
+6. Keep management port `12345`, OTLP gRPC `4317`, and StatsD ports `9125`/`9126`
+   private. StatsD has no authentication.
+
+The receiver listens on IPv6 wildcard addresses for dual-stack container
+networking. Ensure your host supports IPv6 and accepts IPv4-mapped connections,
+or adapt the listener addresses to the host's network configuration. Set a memory
+budget with headroom above the `256MiB` OTLP memory-limiter threshold (start around
+512 MiB and watch actual usage); this limiter does not cap StatsD or total RSS.
+
+The OTLP receiver has no readiness health endpoint. Alloy's private management
+server exposes `/-/ready`, `/-/healthy`, `/metrics` and the UI on port `12345`.
+Configure health checks against that port where supported, and monitor export
+failures, queue utilization and disk usage. Keep the public endpoint on port `4318`.
+
+Apps with access to the gateway's private network can use its private HTTP address
+with authentication. Apps elsewhere use the authenticated public HTTPS endpoint.
+Private network reachability depends on the hosting platform's isolation rules.
+
+## Configure apps
+
+For each instrumented app, set server-side runtime variables (HTTP OTLP example):
 
 ```env
-OTLP_METRICS_URL=https://prometheus-prod-xx.grafana.net/api/prom/push
-OTLP_LOGS_URL=https://logs-prod-xxx.grafana.net/loki/api/v1/push
-OTLP_TRACES_URL=tempo-prod-xx.grafana.net:443
-GRAFANA_PASSWORD=your-grafana-cloud-token
+OTEL_SERVICE_NAME=the-bridge-26
+OTEL_EXPORTER_OTLP_ENDPOINT=https://<your-alloy-domain>
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20<base64-of-app-username-colon-password>"
+OTEL_RESOURCE_ATTRIBUTES="deployment.environment.name=production,service.namespace=personal"
 ```
 
-Variable usage:
+Use the app's original password here, not its bcrypt hash or the Grafana Cloud
+token. The endpoint is the domain root, without `/otlp` or `/v1/traces`, because
+this receiver serves `/v1/traces`, `/v1/metrics` and `/v1/logs`. Restart each app
+and give it a distinct service name. Apps on the gateway's private network can
+instead use `http://<alloy-private-hostname>:4318` with the same authentication header.
 
-- `OTLP_METRICS_URL`: full HTTPS Prometheus remote write endpoint for metrics
-- `OTLP_LOGS_URL`: full HTTPS Loki push endpoint for logs
-- `OTLP_TRACES_URL`: Tempo OTLP gRPC endpoint in `host:port` format
-- `GRAFANA_PASSWORD`: Grafana Cloud token used by all exporters
-
-The trace endpoint intentionally does not include `https://` because the OTLP exporter in `config.alloy` expects a gRPC `host:port` endpoint.
-
-## Run with Docker
-
-Use the published Alloy image and mount the local configuration file:
-
-```bash
-docker run \
-  --rm \
-  -v "$PWD/config.alloy:/etc/alloy/config.alloy" \
-  --env-file "$PWD/.env" \
-  -p 12345:12345 \
-  -p 4317:4317 \
-  -p 4318:4318 \
-  -p 9125:9125/tcp \
-  -p 9126:9126/udp \
-  grafana/alloy:latest \
-  run \
-    --server.http.listen-addr=0.0.0.0:12345 \
-    --storage.path=/var/lib/alloy/data \
-    /etc/alloy/config.alloy
-```
-
-The Alloy UI and HTTP server will be available at `http://localhost:12345`.
-
-## Run with the Local Dockerfile
-
-If you want to use the repository image instead of bind-mounting the config:
+## Local Docker
 
 ```bash
 docker build -t local/alloy-gateway .
-
-docker run \
-  --rm \
-  --env-file "$PWD/.env" \
-  -p 4317:4317 \
-  -p 4318:4318 \
-  -p 9125:9125/tcp \
-  -p 9126:9126/udp \
-  local/alloy-gateway \
-  --server.http.listen-addr=0.0.0.0:12345 \
-  /etc/alloy/config.alloy
+docker run --rm --name alloy-gateway \
+  --env-file .env \
+  -p 127.0.0.1:4318:4318 \
+  -p 127.0.0.1:12345:12345 \
+  -v alloy-data:/var/lib/alloy/data \
+  local/alloy-gateway
 ```
 
-If you want the Alloy UI exposed in this mode, also publish port `12345`.
+The management UI is at http://localhost:12345. To test gRPC or StatsD locally,
+also publish the relevant ports on `127.0.0.1`. The Dockerfile pins Alloy v1.20.0.
+`mapping-statsd.yaml` is now connected through `mapping_config_path` and applies
+the existing gauge mapping.
 
-## Configuration Notes
+Validate without starting receivers or sending telemetry (requires configured env):
 
-- `config.alloy` reads endpoints from environment variables instead of hardcoded URLs.
-- Metrics use `OTLP_METRICS_URL`, logs use `OTLP_LOGS_URL`, and traces use `OTLP_TRACES_URL`.
-- The shared secret is read from `GRAFANA_PASSWORD` via `sys.env("GRAFANA_PASSWORD")`.
-- If this repository is reused for another environment, update the endpoint variables in `.env` and any Grafana Cloud usernames in `config.alloy`.
+```bash
+docker run --rm --env-file .env --entrypoint /bin/alloy \
+  local/alloy-gateway validate --stability.level=public-preview /etc/alloy/config.alloy
+```
 
-## Telemetry Flow
+An unauthenticated request must be rejected:
 
-1. Alloy receives StatsD and OTLP traffic locally.
-2. StatsD metrics are exposed through the embedded StatsD exporter and scraped every `10s`.
-3. OTLP signals are batched and forwarded to Grafana Cloud.
+```bash
+curl -i -X POST http://localhost:4318/v1/traces \
+  -H 'Content-Type: application/json' --data '{"resourceSpans":[]}'
+```
 
-## Quick Checks
+Expect `401`. Retry with `curl -u the-bridge-26` to enter the password
+interactively; an empty valid request should return `200`. This checks receiver
+authentication, not Cloud delivery. Send real app traffic and verify the service
+in Grafana Tempo, its metrics in Mimir and error logs in Loki.
 
-- Open `http://localhost:12345` to confirm Alloy is running.
-- Send OTLP telemetry to `localhost:4317` or `localhost:4318`.
-- Send StatsD metrics to `localhost:9125` or `localhost:9126`.
+## Buffering and compatibility
+
+OTLP signals enter a bounded file-backed exporter queue **before** batching.
+Queues are limited to 1000 requests per signal, retry retryable export failures
+with backoff, and persist under `/var/lib/alloy/data/otlp-queue`. A mounted volume
+allows queued data to survive replacement deployments. StatsD remote write also
+stores its WAL under Alloy's storage path. Monitor volume capacity.
+
+The file-storage component is public preview, so startup and validation explicitly
+use `--stability.level=public-preview`. Pin the image and validate upgrades.
+Persistence does not guarantee lossless delivery: full queues, disk exhaustion,
+permanent export errors, upstream app buffer loss and outage during redeployment
+can still lose telemetry. Export retries are unlimited in duration for retryable
+errors, but queue capacity remains bounded. This gateway does not add redaction
+rules; tailor those to your apps before sending sensitive attributes.
+
+References: [Alloy authentication](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.auth.basic/),
+[OTLP HTTP exporter](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.otlphttp/),
+[file storage](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.storage.file/),
+[Grafana Cloud OTLP setup](https://grafana.com/docs/grafana-cloud/send-data/otlp/send-data-otlp/).
