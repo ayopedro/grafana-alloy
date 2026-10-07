@@ -123,7 +123,7 @@ docker run --rm --name alloy-gateway \
 ```
 
 The management UI is at http://localhost:12345. To test gRPC locally, also publish
-port `4317` on `127.0.0.1`. The Dockerfile pins Alloy v1.20.0.
+port `4317` on `127.0.0.1`. The Dockerfile pins Alloy v1.20.1.
 
 Validate without starting receivers or sending telemetry (requires configured env):
 

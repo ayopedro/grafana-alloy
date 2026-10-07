@@ -1,4 +1,4 @@
-FROM grafana/alloy:v1.20.0
+FROM grafana/alloy:v1.20.1
 COPY config.alloy /etc/alloy/config.alloy
 COPY start.sh /etc/alloy/start.sh
 EXPOSE 4318
