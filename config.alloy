@@ -3,29 +3,6 @@ logging {
   format = "logfmt"
 }
 
-// Legacy StatsD ingestion is private-only. Do not expose these ports publicly.
-prometheus.exporter.statsd "statsd" {
-  listen_tcp          = ":9125"
-  listen_udp          = ":9126"
-  mapping_config_path = "/etc/alloy/mapping-statsd.yaml"
-}
-
-prometheus.scrape "statsd" {
-  targets         = prometheus.exporter.statsd.statsd.targets
-  forward_to      = [prometheus.remote_write.grafana_cloud_metrics.receiver]
-  scrape_interval = "10s"
-}
-
-prometheus.remote_write "grafana_cloud_metrics" {
-  endpoint {
-    url = sys.env("OTLP_METRICS_URL")
-    basic_auth {
-      username = sys.env("GRAFANA_METRICS_USERNAME")
-      password = sys.env("GRAFANA_PASSWORD")
-    }
-  }
-}
-
 // One htpasswd entry per app; ingestion passwords are separate from Cloud tokens.
 otelcol.auth.basic "ingestion" {
   htpasswd {

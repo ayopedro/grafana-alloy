@@ -6,8 +6,6 @@ set -eu
 : "${GRAFANA_OTLP_ENDPOINT:?Set the Grafana Cloud OTLP base URL}"
 : "${GRAFANA_OTLP_USERNAME:?Set the Grafana Cloud OTLP instance ID}"
 : "${GRAFANA_PASSWORD:?Set the Grafana Cloud write token}"
-: "${OTLP_METRICS_URL:?Set the Prometheus remote-write URL for StatsD}"
-: "${GRAFANA_METRICS_USERNAME:?Set the Prometheus instance ID for StatsD}"
 
 exec /bin/alloy run \
   --stability.level=public-preview \

@@ -2,12 +2,10 @@
 
 A shared, authenticated OTLP gateway for applications on any hosting platform. Each app pushes telemetry
 with its own ingestion credentials; Alloy forwards traces, logs and metrics to
-Grafana Cloud using a separate Cloud token. Existing private StatsD ingestion is
-preserved with Prometheus remote write.
+Grafana Cloud using a separate Cloud token.
 
 ```text
 Apps → HTTPS + app credentials → Alloy :4318 → Grafana Cloud OTLP
-StatsD clients → private :9125/:9126 → Alloy → Grafana Cloud Prometheus
 ```
 
 ## Configuration
@@ -21,13 +19,11 @@ container environment variables:
 | `GRAFANA_OTLP_USERNAME` | OTLP instance ID from that tile |
 | `GRAFANA_PASSWORD` | Cloud token with metrics, logs and traces write permissions |
 | `ALLOY_INGESTION_HTPASSWD` | One bcrypt htpasswd entry per app, separated by actual newlines |
-| `OTLP_METRICS_URL` | Existing Prometheus remote-write URL for StatsD, ending in `/api/prom/push` |
-| `GRAFANA_METRICS_USERNAME` | Prometheus instance ID for the StatsD remote-write endpoint |
 | `PORT` | Optional hosting-platform setting: `4318`, matching the fixed OTLP HTTP receiver port; Alloy does not read this variable |
 
-`OTLP_LOGS_URL` and `OTLP_TRACES_URL` are no longer used. The unified exporter
+`OTLP_METRICS_URL`, `GRAFANA_METRICS_USERNAME`, `OTLP_LOGS_URL` and
+`OTLP_TRACES_URL` are no longer used. StatsD ingestion has been removed. The unified exporter
 appends each signal's `/v1/*` path to `GRAFANA_OTLP_ENDPOINT` automatically.
-Grafana's OTLP and Prometheus instance IDs can differ; use each tile's values.
 The startup script refuses to start when required variables are missing.
 
 Generate an app entry interactively, avoiding a password in shell history:
@@ -80,14 +76,13 @@ other entries continue to work. Keep Grafana Cloud credentials only on the gatew
    proxy to the OTLP HTTP receiver on **port `4318`**. Terminate TLS at that ingress.
 5. Start with one replica using that storage. Keep the gateway running continuously.
    Each additional replica needs independent storage; do not share queue files.
-6. Keep management port `12345`, OTLP gRPC `4317`, and StatsD ports `9125`/`9126`
-   private. StatsD has no authentication.
+6. Keep management port `12345` and OTLP gRPC `4317` private.
 
 The receiver listens on IPv6 wildcard addresses for dual-stack container
 networking. Ensure your host supports IPv6 and accepts IPv4-mapped connections,
 or adapt the listener addresses to the host's network configuration. Set a memory
 budget with headroom above the `256MiB` OTLP memory-limiter threshold (start around
-512 MiB and watch actual usage); this limiter does not cap StatsD or total RSS.
+512 MiB and watch actual usage); this limiter does not cap total process RSS.
 
 The OTLP receiver has no readiness health endpoint. Alloy's private management
 server exposes `/-/ready`, `/-/healthy`, `/metrics` and the UI on port `12345`.
@@ -127,10 +122,8 @@ docker run --rm --name alloy-gateway \
   local/alloy-gateway
 ```
 
-The management UI is at http://localhost:12345. To test gRPC or StatsD locally,
-also publish the relevant ports on `127.0.0.1`. The Dockerfile pins Alloy v1.20.0.
-`mapping-statsd.yaml` is now connected through `mapping_config_path` and applies
-the existing gauge mapping.
+The management UI is at http://localhost:12345. To test gRPC locally, also publish
+port `4317` on `127.0.0.1`. The Dockerfile pins Alloy v1.20.0.
 
 Validate without starting receivers or sending telemetry (requires configured env):
 
@@ -156,8 +149,7 @@ in Grafana Tempo, its metrics in Mimir and error logs in Loki.
 OTLP signals enter a bounded file-backed exporter queue **before** batching.
 Queues are limited to 1000 requests per signal, retry retryable export failures
 with backoff, and persist under `/var/lib/alloy/data/otlp-queue`. A mounted volume
-allows queued data to survive replacement deployments. StatsD remote write also
-stores its WAL under Alloy's storage path. Monitor volume capacity.
+allows queued data to survive replacement deployments. Monitor volume capacity.
 
 The file-storage component is public preview, so startup and validation explicitly
 use `--stability.level=public-preview`. Pin the image and validate upgrades.

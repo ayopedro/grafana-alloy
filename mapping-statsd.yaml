@@ -1,9 +1,0 @@
-defaults:
-  ttl: 0
-mappings:
-- match: ".+"
-  match_type: regex
-  match_metric_type: gauge
-  ttl: 60s
-  name: "$0"
-
